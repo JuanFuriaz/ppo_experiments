@@ -25,7 +25,7 @@ python train.py \
 	--seed $i \
 	--title infomax_freeze_64_stack4
 
-	python train.py \
+python train.py \
 	--raw t \
 	--ndim 64 \
 	--img-stack 4 \
