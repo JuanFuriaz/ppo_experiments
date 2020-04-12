@@ -1,0 +1,22 @@
+name: ppo-experiments
+dependencies:
+- pip=19.1
+- python=3.7.5
+- cudatoolkit=10.0 
+- cudnn=7.6.4 
+- swig
+- numba
+- xvfbwrapper
+- scikit-learn=0.22.1
+- scipy=1.4.1 
+- joblib=0.14.1
+- pip:
+  - torch==1.4
+  - visdom==0.1.8.9
+  - gym==0.15.4
+  - box2d
+  - box2d-kengz
+  - tensorboard-pytorch
+  - tensorboard
+  - torchvision
+  - pytorch_lightning
