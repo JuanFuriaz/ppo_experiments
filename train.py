@@ -443,7 +443,7 @@ class Agent():
             print(v.mean(), v.median())
             print(v.max(), v.min())
         """
-        if self.srl_model_type == "vae" and args.tb:
+        if args.srl_model_type == "vae" and args.tb:
             z = self.net.get_z(s[0].unsqueeze_(0))
             dec2 = self.net.vae.decode(z).squeeze(0)
             imgs =  torch.cat((dec2,  s[0]), dim=2)
