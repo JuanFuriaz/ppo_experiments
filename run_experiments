@@ -1,0 +1,55 @@
+#!/usr/bin/env bash
+set -eo pipefail
+shopt -s nullglob globstar
+
+# -----------------------------------------------------------------------------
+# define constants relevant for running scripts
+NUMRUNS=4  # number of parallel runs when this script is executed
+FREEZE=0  # 0: False, 1: True
+NDIM=32
+MODELPATH="contin_infomax/pretrained_infomax_32_stack4_earlystop_action_conti.ckpt"
+MODELTYPE="infomax"
+LOGDIR="runs/200416_nonexpert"
+# -----------------------------------------------------------------------------
+
+# activate conda env
+eval "$(conda shell.bash hook)"
+conda activate ppo-experiments
+echo "[INFO] CONDA_PREFIX: $CONDA_PREFIX"
+echo "[INFO] python path: $(which python)"
+
+# cluster-specific
+if [ "$USER" == "dimant" ]; then
+    sleep "$(shuf -i 30-120 -n 1)"  # random sleep to prevent scheduling overlaps
+fi
+
+for ((i=0;i<"$NUMRUNS";i+=1))
+do 
+    echo "$i"
+    sleep 10  # sleep 10 seconds to ensure there are no versioning conflicts
+
+    xvfb-run -a -s "-screen 0 1400x900x24 +extension RANDR" --     \
+	python train.py                                                \
+	--tb                                                           \
+	--ndim $NDIM                                                   \
+	--rl-path "$MODELPATH"                                         \
+    --logdir "$LOGDIR"                                             \
+    --freeze "$FREEZE"                                             \
+	--srl-model-type $MODELTYPE                                    \
+    &  # allows parallel experiments
+	# --seed $i \
+
+    # remember process ID
+    pid=$!
+    PID_LIST+=" $pid"
+
+done
+
+trap 'kill $PID_LIST' SIGTERM
+echo "Parallel processes have started"
+wait $PID_LIST
+echo "All processes have completed"
+
+
+# TODO: generalize ndim
+# TODO: generalize --infomax --vae --raw

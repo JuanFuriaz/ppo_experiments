@@ -19,6 +19,7 @@ import argparse
 
 import numpy as np
 
+import re
 import gym
 import torch
 import torchvision
@@ -41,17 +42,18 @@ from torch.utils.tensorboard import SummaryWriter
 import datetime
 import csv
 import os
+import glob
 
 parser = argparse.ArgumentParser(description='Train a PPO agent for the CarRacing-v0')
 subparsers = parser.add_subparsers(description='Representational Learning Models ')
 parser.add_argument('--gamma', type=float, default=0.99, metavar='G', help='discount factor (default: 0.99)')
-parser.add_argument('--ndim', type=int, default=256, metavar='G', help='Dimension size shared for both VAE and CNN model')
+parser.add_argument('--ndim', type=int, required=True, metavar='G', help='Dimension size shared for both VAE and CNN model')
 parser.add_argument('--action-repeat', type=int, default=8, metavar='N', help='repeat action in N frames (default: 8)')
 parser.add_argument('--action-vec', type=int, default=0, metavar='N', help='Action vector for the fully conectected network')
 parser.add_argument('--eps', type=int, default=4000, metavar='N', help='Episodes for training')
 parser.add_argument('--terminate', action='store_true', help='Termination after the predefined threeshold')
 parser.add_argument('--img-stack', type=int, default=1, metavar='N', help='stack N image in a state (default: 4)')
-parser.add_argument('--seed', type=int, default=0, metavar='N', help='random seed (default: 0)')
+parser.add_argument('--seed', type=int, default=None, metavar='N', help='random seed (default: None)')
 parser.add_argument('--render', action='store_true', help='render the environment')
 parser.add_argument('--vis', action='store_true', help='use visdom')
 parser.add_argument('--tb', action='store_true', help='Tensorboard')
@@ -63,15 +65,19 @@ parser.add_argument(
     '--batch', type=int, default=128, metavar='N', help='Batch size for sampling')
 parser.add_argument(
     '--learning', type=float, default=0.001, metavar='N', help='Learning Rate')
-parser.add_argument("--vae", type=str2bool, nargs='?', const=True, default=False, help='select vae')
-parser.add_argument("--infomax", type=str2bool, nargs='?', const=True, default=False, help='select infomax')
-parser.add_argument("--raw", type=str2bool, nargs='?', const=True, default=True, help='select raw pixel framework')
+# parser.add_argument("--vae", type=str2bool, nargs='?', const=True, default=False, help='select vae')
+# parser.add_argument("--infomax", type=str2bool, nargs='?', const=True, default=False, help='select infomax')
+# parser.add_argument("--raw", type=str2bool, nargs='?', const=True, default=True, help='select raw pixel framework')
+parser.add_argument('--srl-model-type', type=str, help="specify state representation learning model type. Default of None implies raw pixel model",
+        default=None, choices=['infomax', 'vae'])
 parser.add_argument('--rnn',  action='store_true',  help='Use gated recurrend unit')
 parser.add_argument("--reward-mod", action='store_false',  help='Engineered Reward turn off')
-parser.add_argument("--freeze", action='store_true', help='Freeze layers in representational models')
-parser.add_argument('--rl-path',  type=str, default='pretrain_vae/pretrain  ed_vae_16.ckpt', metavar='N', help='Give model path for Representational learning models')
-parser.add_argument('--title',  type=str, default='', metavar='N', help='Name for the image title')
+# parser.add_argument("--freeze", action='store_true', help='Freeze layers in representational models')
+parser.add_argument("--freeze", type=str2bool, nargs='?', const=True, default=True, help='Freeze layers in representational models')
+parser.add_argument('--rl-path',  type=str, default=None, metavar='N', help='Give model path for Representational learning models')
+parser.add_argument('--title',  type=str, default=None, metavar='N', help='Name for the image title')
 parser.add_argument('--debug',  action='store_true',  help='Debug on')
+parser.add_argument('--logdir',  type=str, required=True, help='directory for tensorboard and csv')
 
 
 
@@ -112,18 +118,31 @@ print("Parameters: ")
 print(args)
 print("")
 
+# set up versioning
+version_dirs = glob.glob("%s/version_*" % args.logdir)
+r = re.compile(r"\d+")
+versions = [int(r.findall(d)[-1]) for d in version_dirs]
+versions = sorted(versions)
+new_version = versions[-1] + 1 if len(versions) > 0 else 1
+new_logdir = "%s/version_%d" % (args.logdir, new_version)
+args.logdir = new_logdir
+
+if args.title is None:
+    args.title = os.path.basename(args.rl_path).replace(".ckpt", "")
 now_d = datetime.datetime.now().strftime("%d_%m_%Y")
-dict_log = "".join(["runs/", now_d])
-file_log = "".join([args.title, "_", str(args.seed)])
-csv_log = "".join([dict_log,"/", file_log, ".csv"])
+dict_log = "".join([args.logdir, "/"])
+# file_log = "".join([args.title, "_", str(args.seed)])
+csv_log = "".join([dict_log, args.title, ".csv"])
 if args.tb:
-    writer = SummaryWriter("".join([dict_log, "/", file_log]))
+    writer = SummaryWriter("".join([dict_log]))
 else:
     if not os.path.exists(dict_log):
         os.makedirs(dict_log)
     if os.path.isfile(csv_log):
         os.remove(csv_log)
 
+if args.seed is None:
+    args.seed = np.random.randint(2**32-1)
 torch.manual_seed(args.seed)
 np.random.seed(args.seed)
 
@@ -140,7 +159,7 @@ else:
 
 class Env():
     """
-    Environment wrapper for CarRacing 
+    Environment wrapper for CarRacing
     """
 
     def __init__(self):
@@ -235,20 +254,16 @@ class Net(nn.Module):
     def __init__(self):
         super(Net, self).__init__()
 
-        """
-        if args.rnn:
-            self.h = torch.zeros(1, 100)
-        """
-        if args.vae:  #representational learning
-            # load vae model
-            self.vae = self.load_rl(args)
-
-        elif args.infomax:
-            # load infomax
-            self.infomax = self.load_rl(args)
-
+        # use SRL encoder or init raw pixel encoder
+        if args.rl_path is not None:
+            self.srl_model = self.load_rl(args)
+            if args.ndim is not None and args.ndim != self.srl_model.hparams.ndim:
+                raise ValueError("Mismatch between SRL-Model ndim (%d) and RL-Agent ndim (%d)" %
+                    (args.ndim, self.srl_model.hparams.ndim))
+            self.ndim = self.srl_model.hparams.ndim
+            self.img_stack = self.srl_model.hparams.img_stack
         else:
-            self.cnn_base = nn.Sequential(  # input shape (4, 96, 96)
+            self.srl_model = nn.Sequential(  # input shape (4, 96, 96)
                 nn.Conv2d(args.img_stack, 8, kernel_size=4, stride=2),
                 nn.ReLU(),  # activation
                 nn.Conv2d(8, 16, kernel_size=3, stride=2),  # (8, 47, 47)
@@ -264,13 +279,15 @@ class Net(nn.Module):
             )  # output shape (256, 1, 1)
             print("Raw pixel loaded")
             self.apply(self._weights_init)
-            if args.freeze:
-                print("Freezing ConvLayer Weights")
-                for i, chld in enumerate(self.cnn_base.children()):  # Freeze weights
-                    for params in chld.parameters():
-                        params.requires_grad = False
 
-        if (args.vae or args.infomax) and args.action_vec > 0:
+        # optionally, freeze weights
+        if args.freeze:
+            print("Freezing ConvLayer Weights")
+            for i, chld in enumerate(self.srl_model.children()):  # Freeze weights
+                for params in chld.parameters():
+                    params.requires_grad = False
+
+        if args.srl_model_type is not None and args.action_vec > 0:
             self.v = nn.Sequential(nn.Linear(args.ndim + args.action_vec*3, 100), nn.ReLU(), nn.Linear(100, 1))
             self.fc = nn.Sequential(nn.Linear(args.ndim + args.action_vec*3, 100), nn.ReLU())
 
@@ -302,17 +319,17 @@ class Net(nn.Module):
         1) Beta and Gamma for computing the distribution of the policy (using beta distribution)
         2) Value function for advantage term
         """
-        if args.vae:  #representational learning
+        if args.srl_model_type == "vae":  #representational learning
             # load vae model
             if args.action_vec > 0:
                 x = torch.cat((self.get_z(x[0]), x[1]), dim=1)
             else:
                 x = self.get_z(x)
-        elif args.infomax:
+        elif args.srl_model_type == "infomax":
             if args.action_vec > 0:
-                x = torch.cat((self.infomax.encoder(x[0]), x[1]), dim=1)
+                x = torch.cat((self.srl_model.encoder(x[0]), x[1]), dim=1)
             else:
-                x = self.infomax.encoder(x)
+                x = self.srl_model.encoder(x)
         else:
             #TODO: Conv with action vector?
             x = self.cnn_base(x)
@@ -339,24 +356,21 @@ class Net(nn.Module):
         state_dict = torch.load(args.rl_path)["state_dict"]
         assert hparams.ndim == args_parser.ndim
        # assert hparams.img_stack == args_parser.img_stack
-        if args.vae:
+        if args.srl_model_type == "vae":
             rl = VAE(hparams).to(device)  # Load VAE with parameters
             print("VAE Loaded")
-        else:
+        elif args.srl_model_type == "infomax":
             rl  = InfoMax(hparams).to(device) # Load VAE with parameters
             print("InfoMax loaded")
+        else:
+            raise ValueError("Invalid SRL-model-type: %s" % args.srl_model_type)
 
         rl.load_state_dict(state_dict)  # Load weights
-        if args.freeze:
-            print("Freezing Representational Learning Model")
-            for i, chld in enumerate(rl.children()):  #Freeze weights
-                for params in chld.parameters():
-                    params.requires_grad = False
         return rl
 
     def get_z(self, x):
-        mu, logvar = self.vae.encode(x)
-        return self.vae.reparameterize(mu, logvar).to(device)
+        mu, logvar = self.srl_model.encode(x)
+        return self.srl_model.reparameterize(mu, logvar).to(device)
 
 class Agent():
     """
@@ -429,7 +443,7 @@ class Agent():
             print(v.mean(), v.median())
             print(v.max(), v.min())
         """
-        if args.vae and args.tb:
+        if self.srl_model_type == "vae" and args.tb:
             z = self.net.get_z(s[0].unsqueeze_(0))
             dec2 = self.net.vae.decode(z).squeeze(0)
             imgs =  torch.cat((dec2,  s[0]), dim=2)
@@ -478,7 +492,7 @@ class Agent():
                 # nn.utils.clip_grad_norm_(self.net.parameters(), self.max_grad_norm)
                 self.optimizer.step()
 
-        if args.vae:
+        if args.srl_model_type == "vae":
             z = self.net.get_z(s[0].unsqueeze_(0))
             dec2 =  self.net.vae.decode(z)
             save_image(dec2, 'test_img/' + args.title + "_" + str(args.ndim) +  '_dec_final_' + str(self.training_step) + '.png')
